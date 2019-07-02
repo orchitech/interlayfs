@@ -1,7 +1,7 @@
 #!/bin/bash
 
 set -e
-. "$(dirname "$BASH_SOURCE")/../lib/libinterlayfs.sh"
+. "$(dirname "$(realpath "$BASH_SOURCE")")/../lib/libinterlayfs.sh"
 ilfs_deps_check || exit 2
 
 help()
