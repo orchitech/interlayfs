@@ -1,0 +1,59 @@
+#!/bin/bash
+
+set -e
+. "$(dirname "$BASH_SOURCE")/../lib/libinterlayfs.sh"
+
+help()
+{
+  echo "Usage:"
+  echo " interlayfs [-ri] [-o options] --treefile file --pathfile dir"
+  echo " interlayfs -u dir"
+}
+
+opts=$(getopt --o o:,r,i,u --long treefile:,pathfile:,helphelp -n "$0" -- "$@")
+[[ $? -eq 0 ]] || { ilfs_err "Invalid options provided."; exit 1; }
+eval set -- "$opts"
+
+declare unmount= initonly= treefile= pathfile=
+declare -a optstrarr=()
+while true; do
+  case "$1" in
+    --treefile) treefile=$2; shift 2 ;;
+    --pathfile) pathfile=$2; shift 2 ;;
+    -o) optstrarr+=("$2"); shift 2 ;;
+    -r) optstrarr+=(ro); shift ;;
+    -i) initonly=1; shift ;;
+    -u) unmount=1; shift ;;
+    --help) help; exit 0 ;;
+    --) shift; break ;;
+    *) ilfs_err "An error occured during option processing."; exit 1 ;;
+  esac
+done
+
+[[ $# -eq 1 ]] || {
+  help >&2
+  exit 1
+}
+[[ -n "$unmount" ]] || [[ -n "$treefile" && -n "$pathfile" ]] || {
+  help >&2
+  exit 1
+}
+
+ilfs_init "$1"
+for optstr in "${optstrarr[@]}"; do
+  ilfs_add_opts "$optstr"
+done
+
+if [[ -n "$unmount" ]]; then
+  ilfs_umount
+  exit $?
+fi
+
+ilfs_trees_load_config < "$treefile"
+ilfs_paths_load_config < "$pathfile"
+
+if [[ -n "$initonly" ]]; then
+  ilfs_paths_init
+else
+  ilfs_mount
+fi
