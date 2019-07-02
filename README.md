@@ -6,7 +6,7 @@ difference is that interlayfs does not provide filesystem layers shadowing
 the lower layers. Instead, it combines several filesystem trees in a way
 that the resulting virtual fs tree routes all I/O to the original trees
 according to the configuration. interlayfs is a mount-like tool for managing
-complex Linux bind-mount setup in an user-frientdly way. interlayfs is not
+complex Linux bind-mount setup in a user-friendly way. interlayfs is
 actually not a filesystem.
 
 ## Usage
