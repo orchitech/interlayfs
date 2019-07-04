@@ -12,7 +12,7 @@ actually not a filesystem.
 ## Usage
 
 ```
- interlayfs [-ri] [-o options] --treefile file --pathfile dir
+ interlayfs [-ri] [-o options] --treetab file --pathtab file dir
  interlayfs -u dir
 ```
 
@@ -20,11 +20,12 @@ TBD.
 
 ## Typical Use Case
 
-Mass virtual hosting of interpreted applications. As an example consider a
-project with
+Mass virtual hosting of interpreted applications. As an example consider
+a project with
 - Vendor scripts
 - Customization scripts
-- Application data relevant to a single node in a cluster environment - usually temporary or cache files
+- Application data relevant to a single node in a cluster environment - 
+usually temporary or cache files
 - Application data shared across nodes - usually persistent user data
 
 TBD.

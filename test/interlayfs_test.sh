@@ -112,12 +112,12 @@ testMount()
 testCliMountUnmount()
 {
   local nmounts=$(wc -l < /proc/mounts)
-  cat > "$SHUNIT_TMPDIR"/treefile << END
+  cat > "$SHUNIT_TMPDIR"/treetab << END
 src   $TREES/src               ro
 data1 $TREES/data\${DATA1_ID}
 data2 $TREES/data\${DATA2_ID}
 END
-  cat > "$SHUNIT_TMPDIR"/pathfile << END
+  cat > "$SHUNIT_TMPDIR"/pathtab << END
 src  /
 src   app               ro
 data2 app/data/         init=missing il_mkdir
@@ -127,11 +127,11 @@ data1 lib/generated
 END
   DATA1_ID=1 DATA2_ID=2 \
   "$ILFS_ROOT"/bin/interlayfs \
-    --treefile "$SHUNIT_TMPDIR"/treefile \
-    --pathfile "$SHUNIT_TMPDIR"/pathfile \
+    --treetab "$SHUNIT_TMPDIR"/treetab \
+    --pathtab "$SHUNIT_TMPDIR"/pathtab \
     "$TREES"/target || fail "interlayfs mount"
 
-  local npaths=$(grep -c '^[^#]*[[:alnum:]]' "$SHUNIT_TMPDIR"/pathfile)
+  local npaths=$(grep -c '^[^#]*[[:alnum:]]' "$SHUNIT_TMPDIR"/pathtab)
   assertEquals "$npaths more mounts expected compared to original $nmounts mounts" \
     $((nmounts+npaths)) \
     $(wc -l < /proc/mounts)

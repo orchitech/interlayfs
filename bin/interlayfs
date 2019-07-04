@@ -7,20 +7,20 @@ ilfs_deps_check || exit 2
 help()
 {
   echo "Usage:"
-  echo " interlayfs [-ri] [-o options] --treefile file --pathfile dir"
+  echo " interlayfs [-ri] [-o options] --treetab file --pathtab file dir"
   echo " interlayfs -u dir"
 }
 
-opts=$(getopt --o o:,r,i,u --long treefile:,pathfile:,helphelp -n "$0" -- "$@")
+opts=$(getopt --o o:,r,i,u --long treetab:,pathtab:,helphelp -n "$0" -- "$@")
 [[ $? -eq 0 ]] || { ilfs_err "Invalid options provided."; exit 1; }
 eval set -- "$opts"
 
-declare unmount= initonly= treefile= pathfile=
+declare unmount= initonly= treetab= pathtab=
 declare -a optstrarr=()
 while true; do
   case "$1" in
-    --treefile) treefile=$2; shift 2 ;;
-    --pathfile) pathfile=$2; shift 2 ;;
+    --treetab) treetab=$2; shift 2 ;;
+    --pathtab) pathtab=$2; shift 2 ;;
     -o) optstrarr+=("$2"); shift 2 ;;
     -r) optstrarr+=(ro); shift ;;
     -i) initonly=1; shift ;;
@@ -35,26 +35,26 @@ done
   help >&2
   exit 1
 }
-[[ -n "$unmount" ]] || [[ -n "$treefile" && -n "$pathfile" ]] || {
+[[ -n "$unmount" ]] || [[ -n "$treetab" && -n "$pathtab" ]] || {
   help >&2
   exit 1
 }
 
-ilfs_init "$1"
+ilfs_init "$1" || exit $?
 for optstr in "${optstrarr[@]}"; do
   ilfs_add_opts "$optstr"
 done
 
 if [[ -n "$unmount" ]]; then
-  ilfs_umount
-  exit $?
+  ilfs_umount || exit $?
+  exit 0
 fi
 
-ilfs_trees_load_config < "$treefile"
-ilfs_paths_load_config < "$pathfile"
+ilfs_trees_load_config < "$treetab"
+ilfs_paths_load_config < "$pathtab"
 
 if [[ -n "$initonly" ]]; then
-  ilfs_paths_init
+  ilfs_paths_init || exit $?
 else
-  ilfs_mount
+  ilfs_mount || exit $?
 fi

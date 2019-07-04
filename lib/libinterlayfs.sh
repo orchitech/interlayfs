@@ -79,6 +79,7 @@ ilfs_ospath_type()
   local ls type
   ls=$(ls -ld "$ospath" 2>/dev/null) && [[ -n "$ls" ]] || return 1
   type=${ls:0:1}
+  type=${type/-/f}
   if [[ "$type" != [df] ]]; then
     ilfs_err "Encountered OS path '$ospath': type '$type' not allowed."
     return 1
