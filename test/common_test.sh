@@ -3,18 +3,68 @@
 SHUNIT_PARENT=$(realpath "$0")
 ILFS_TEST_PATH=$(dirname "$SHUNIT_PARENT")
 ILFS_ROOT=$(dirname "$ILFS_TEST_PATH")
+source "$ILFS_ROOT"/test/testlib.sh || exit 1
 
-. "$ILFS_ROOT"/lib/libinterlayfs.sh || exit 1
+source "$ILFS_ROOT"/lib/libinterlayfs.sh || exit 1
 
-# Check expected dirname behavior
+# Check expected dirname and basename behavior
+declare -Ar DIRNAMES=(
+  [/a/b]=/a
+  [/a/]=/
+  [/]=/
+  [//]=/
+  [a/b]=a
+  [a//b//]=a
+  [a]=.
+  [a/]=.
+  [.]=.
+)
+declare -Ar BASENAMES=(
+  [/a/b]=b
+  [/a/]=a
+  [/]=/
+  [//]=/
+  [.//]=.
+  [a//.]=.
+  [a/b]=b
+  [a//b//]=b
+  [a]=a
+  [a/]=a
+  [.]=.
+)
+
 testDirname()
 {
-  assertEquals /a "$(dirname /a/b)"
-  assertEquals / "$(dirname /a/)"
-  assertEquals / "$(dirname /)"
-  assertEquals a "$(dirname a/b)"
-  assertEquals . "$(dirname a/)"
-  assertEquals . "$(dirname .)"
+  local p
+  for p in "${!DIRNAMES[@]}"; do
+    assertEquals "dirname of '$p'" "${DIRNAMES[$p]}" "$(dirname "$p")"
+  done
+}
+
+testDirnameV()
+{
+  local p d
+  for p in "${!DIRNAMES[@]}"; do
+    dirname_v d "$p"
+    assertEquals "dirname of '$p'" "${DIRNAMES[$p]}" "$d"
+  done
+}
+
+testBasename()
+{
+  local p
+  for p in "${!BASENAMES[@]}"; do
+    assertEquals "basename of '$p'" "${BASENAMES[$p]}" "$(basename "$p")"
+  done
+}
+
+testBasenameV()
+{
+  local p b
+  for p in "${!BASENAMES[@]}"; do
+    basename_v b "$p"
+    assertEquals "basename of '$p'" "${BASENAMES[$p]}" "$b"
+  done
 }
 
 testBashArrays()
@@ -76,12 +126,10 @@ testPathValid()
   nok=( . .. a /. /./ /.. /../ // //dir /dir//sub /dir/.. /dir/sub/.. /dir/./sub /dir1/../dir2 '' )
   local p
   for p in "${ok[@]}"; do
-    ilfs_paths_validate "$p"
-    assertTrue "'$p' should be valid" $?
+    ilfs_paths_validate "$p" || fail "'$p' should be valid" || :
   done
   for p in "${nok[@]}"; do
-    ilfs_paths_validate "$p"
-    assertFalse "'$p' should be invalid" $?
+    ilfs_paths_validate "$p" && fail "'$p' should be invalid" || :
   done
 }
 
@@ -92,12 +140,10 @@ testPathsContainsGlob()
   noglob=( '[/]' 'x[x/x]x' '[\/]' 'x/+\(x)' 'a/[bc\]/d' )
   local s
   for s in "${glob[@]}"; do
-    ilfs_paths_contains_glob "$s"
-    assertTrue "'$s' should be treated as a glob" $?
+    ilfs_paths_contains_glob "$s" || fail "'$s' should be treated as a glob" || :
   done
   for s in "${noglob[@]}"; do
-    ilfs_paths_contains_glob "$s"
-    assertFalse "'$s' should not be treated as a glob" $?
+    ilfs_paths_contains_glob "$s" && "'$s' should not be treated as a glob" || :
   done
 }
 

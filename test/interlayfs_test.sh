@@ -3,10 +3,10 @@
 SHUNIT_PARENT=$(realpath "$0")
 ILFS_TEST_PATH=$(dirname "$SHUNIT_PARENT")
 ILFS_ROOT=$(dirname "$ILFS_TEST_PATH")
-. "$ILFS_ROOT"/test/testlib.sh || exit 1
+source "$ILFS_ROOT"/test/testlib.sh || exit 1
 execInPrivateNs "$0" "$@"
 
-. "$ILFS_ROOT"/lib/libinterlayfs.sh
+source "$ILFS_ROOT"/lib/libinterlayfs.sh
 
 setUp()
 {
@@ -62,10 +62,11 @@ END
 
 assertPathCompOpt()
 {
-  local expected=$1 path=$2 opt=$3
-  assertEquals "path '$path' option '$opt'" \
-    "$expected" \
-    "$(ilfs_paths_comp_opt "$path" "$opt")"
+  local expected=$1 path=$2 opt=$3 actual=failed
+  if ! ilfs_paths_comp_opt_v actual "$path" "$opt"; then
+    assertEquals "path '$path' option '$opt' failed but set a value" failed "$actual"
+  fi
+  assertEquals "path '$path' option '$opt'" "$expected" "$actual"
 }
 
 testConfig()

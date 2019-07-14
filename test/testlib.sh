@@ -7,7 +7,7 @@
 # Perform test in a private mount namespace.
 execInPrivateNs()
 {
-  if [[ -z "$_ILFS_IN_TEST_NAMESPACE" ]]; then
+  if [[ -z "${_ILFS_IN_TEST_NAMESPACE-}" ]]; then
     _ILFS_IN_TEST_NAMESPACE=1 exec unshare -m "$@"
     exit $?
   fi
@@ -67,4 +67,4 @@ oneTimeSetUp()
   trap 'tearDown; ilfs_fatal "Unhandled error."' ERR 
 }
 
-set -eE
+set -eEu

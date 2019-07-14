@@ -1,7 +1,9 @@
 #!/bin/bash
 
-set -e
-. "$(dirname "$(realpath "$BASH_SOURCE")")/../lib/libinterlayfs.sh"
+set -eu
+
+ILFS_ROOT=$(dirname "$(dirname "$(realpath "${BASH_SOURCE[0]}")")")
+source "$ILFS_ROOT/lib/libinterlayfs.sh"
 ilfs_deps_check || exit 2
 
 help()
@@ -15,7 +17,7 @@ opts=$(getopt --o o:,r,i,u --long treetab:,pathtab:,helphelp -n "$0" -- "$@")
 [[ $? -eq 0 ]] || { ilfs_err "Invalid options provided."; exit 1; }
 eval set -- "$opts"
 
-declare unmount= initonly= treetab= pathtab=
+declare unmount='' initonly='' treetab='' pathtab=''
 declare -a optstrarr=()
 while true; do
   case "$1" in

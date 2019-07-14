@@ -8,43 +8,9 @@
 # control variables
 # ILFS_DEBUG: print more debugging info if set
 
-ilfs_err()
-{
-  read line file <<<$(caller)
-  echo "[$file:$line] ERROR $1" >&2
-}
-
-ilfs_fatal()
-{
-  local msg=$1
-  [[ -n "$msg" ]] || msg="Internal software error."
-  read line file <<<$(caller) # TODO: a stack trace would be better here
-  echo "[$file:$line] ERROR $msg" >&2
-  if [[ ${#FUNCNAME[@]} -gt 1 ]]; then
-    local i
-    echo "Call tree:" >&2
-    for ((i=0;i<${#FUNCNAME[@]}-1;i++)); do
-      echo " $i: ${BASH_SOURCE[$i+1]}:${BASH_LINENO[$i]} ${FUNCNAME[$i]}()"
-    done
-  fi
-  exit 70 # sysexits.h
-}
-
-ilfs_deps_check()
-{
-  local -a errs=()
-  local bash_major=${BASH_VERSION%%.*}
-  [[ "$bash_major" -ge 4 ]] 2>/dev/null || errs+=("Incompatible bash version '$BASH_VERSION'. Required Bash 4 or higher.")
-  [[ "$OSTYPE" = linux-gnu ]] || errs+=("Incompatible OS '$OSTYPE'. Required linux-gnu.")
-  command -v printenv &> /dev/null || errs+=("Missing printenv")
-  # TODO: test realpath
-  getopt -T &> /dev/null; [[ $? -eq 4 ]] || errs+=("Incompatible getopt version. Required enhanced getopt.")
-  if [[ -n "$errs" ]]; then
-    ilfs_err "Compatibility issues found:"$'\n'"$(printf -- '- %s\n' "${errs[@]}")"
-    return 1
-  fi
-  return 0
-}
+[[ -n "${ILFS_ROOT-}" ]] || \
+  ILFS_ROOT=$(dirname "$(dirname "$(realpath "${BASH_SOURCE[0]}")")")
+source "$ILFS_ROOT/lib/libinterlayfs-utils.sh"
 
 ## GLOBAL AND COMMON OPTIONS
 
@@ -57,34 +23,20 @@ ilfs_init()
     return 1
   }
 
-  declare -g _ilfs_op=
+  declare -g _ilfs_op=''
   declare -g _ilfs_target=$target
   declare -gA _ilfs_opts=()
   declare -gA _ilfs_trees_root=()
   declare -gA _ilfs_trees_opts=()
-  declare -ga _paths=()
-  declare -gA _paths_tree=()
-  declare -gA _paths_opts=()
-  declare -gA _paths_initcmd=()
+  declare -ga _ilfs_paths=()
+  declare -gA _ilfs_paths_tree=()
+  declare -gA _ilfs_paths_opts=()
+  declare -gA _ilfs_paths_initcmd=()
 }
 
 ilfs_add_opts()
 {
   ilfs_parse_opts "$@" _ilfs_opts
-}
-
-ilfs_ospath_type()
-{
-  local ospath=$1
-  local ls type
-  ls=$(ls -ld "$ospath" 2>/dev/null) && [[ -n "$ls" ]] || return 1
-  type=${ls:0:1}
-  type=${type/-/f}
-  if [[ "$type" != [df] ]]; then
-    ilfs_err "Encountered OS path '$ospath': type '$type' not allowed."
-    return 1
-  fi
-  echo "$type"
 }
 
 readonly -A _ILFS_OPTS_DEF=(
@@ -99,8 +51,8 @@ readonly -A _ILFS_OPTS_DEFAULTS=(
   [type]=e
 )
 readonly -A _ILFS_OPTS_VALUE_REX=(
-  [ro]=
-  [rw]=
+  [ro]=''
+  [rw]=''
   [init]='^(never|skip|missing|always)$'
   [type]='^[edf]$'
 )
@@ -108,7 +60,7 @@ ilfs_parse_opts()
 {
   local optstr=$1
   local -n __optarr=$2
-  local index_prefix=$3
+  local index_prefix=${3-}
   local strict=1 # make this caller-defined if needed
 
   local -a opts
@@ -138,29 +90,6 @@ ilfs_parse_opts()
   done
 }
 
-# FIXME: envsubst-preprocessed configs will not probably behave as the user expects.
-# TODO: reimplement read-based parsing in ilfs_paths_load_config using regexps with envsubst merged.
-ilfs_envsubst()
-{
-  local rest=$(cat)
-  local out=
-
-  while [[ "$rest" =~ ^(([^\$\\]|\\.)*)\$(\{([a-zA-Z_][a-zA-Z0-9_]*)\})?(.*)$ ]]; do
-    out+="${BASH_REMATCH[1]//\\\$/\$}"
-    local var=${BASH_REMATCH[4]}
-    rest=${BASH_REMATCH[5]}
-    [[ -n "$var" ]] || {
-      ilfs_err "Invalid usage of an unescpaed '\$' character in config file."
-      return 2
-    }
-    out+=$(printenv "$var") || {
-      ilfs_err "Undefined env variable '$var' referenced in config file."
-      return 1
-    }
-  done
-  printf '%s%s\n' "$out" "${rest//\\\$/\$}"
-}
-
 ## MOUNTING
 
 ilfs_mount()
@@ -170,13 +99,12 @@ ilfs_mount()
   ilfs_paths_init
   ilfs_create_mountpoints
   local path tree root rw
-  for path in "${_paths[@]}"; do
-    #ilfs_paths_comp_opt "$path" ro
-
-    rw=ro
-    (( "$(ilfs_paths_comp_opt "$path" ro)" )) || rw=rw
-    tree=$(ilfs_paths_tree "$path") || ilfs_fatal
-    root=$(ilfs_trees_root "$tree") || ilfs_fatal
+  local -i opt_ro
+  for path in "${_ilfs_paths[@]}"; do
+    ilfs_paths_comp_opt_v opt_ro "$path" ro
+    (( opt_ro )) && rw=ro || rw=rw
+    tree=${_ilfs_paths_tree[$path]}
+    root=${_ilfs_trees_root[$tree]}
     mount --bind --make-private -o "$rw" "${root}${path}" "${_ilfs_target}${path}" || return 1
   done
 }
@@ -193,7 +121,7 @@ ilfs_create_mountpoints()
     return 1
   }
   local path
-  for path in "${_paths[@]}"; do
+  for path in "${_ilfs_paths[@]}"; do
     ilfs_paths_create_mountpoint "$path" || {
       ilfs_err "Failed to create mountpoint for '$path'. Aborting."
       return 1
@@ -212,26 +140,26 @@ ilfs_paths_do_create_mountpoint()
   [[ -d "${parent_root}${parent_path}" ]] || ilfs_fatal
 
   # TODO: unit-test this
-  if [[ "$parent_path" = / ]]; then
+  if [[ "$parent_path" = '/' ]]; then
     subpath=${path#/}
   else
     subpath=${path#$parent_path/}
   fi
-  if [[ "$subpath" = "$path" || "$subpath" = /* ]]; then
+  if [[ "$subpath" == "$path" || "$subpath" = /* ]]; then
     ilfs_err "Cannot calculate relative mountpoint path for path '$path' with parent '$parent_path'."
     return 1
   fi
 
-  local leaf=$subpath
-  local dir=$(dirname "$subpath")
+  local dir leaf=$subpath
+  dirname_v dir "$subpath"
   local -a dirs=()
   while [[ "$dir" != . ]]; do
     dirs=("$dir" "${dirs[@]}")
-    dir=$(dirname "$dir")
+    dirname_v dir "$dir"
   done
   if [[ "$path_type" = d ]]; then
     dirs+=("$leaf")
-    leaf=
+    leaf=''
   fi
   # Behold, modifying the filesystem here
   (
@@ -258,13 +186,13 @@ ilfs_paths_do_create_mountpoint()
 ilfs_paths_create_mountpoint()
 {
   local path=$1
-  local tree root parent_path parent_tree= parent_root
+  local tree root parent_path parent_tree='' parent_root
 
-  tree=$(ilfs_paths_tree "$path") || ilfs_fatal
-  root=$(ilfs_trees_root "$tree") || ilfs_fatal
-  if parent_path=$(ilfs_paths_parent "$path"); then
-    parent_tree=$(ilfs_paths_tree "$parent_path") || ilfs_fatal
-    parent_root=$(ilfs_trees_root "$parent_tree") || ilfs_fatal
+  tree=${_ilfs_paths_tree[$path]}
+  root=${_ilfs_trees_root[$tree]}
+  if ilfs_paths_parent_v parent_path "$path"; then
+    parent_tree=${_ilfs_paths_tree[$parent_path]}
+    parent_root=${_ilfs_trees_root[$parent_tree]}
   else
     parent_path=/
     parent_root=$_ilfs_target
@@ -275,7 +203,7 @@ ilfs_paths_create_mountpoint()
   fi
 
   local path_type parent_tree_path_type
-  path_type=$(ilfs_ospath_type "${root}${path}") || {
+  ilfs_ospath_type_v path_type "${root}${path}" || {
     ilfs_err "OS path '${root}${path}' not ready for mounting."
     return 1
   }
@@ -287,7 +215,7 @@ ilfs_paths_create_mountpoint()
     }
   fi
 
-  parent_tree_path_type=$(ilfs_ospath_type "${parent_root}${path}") || {
+  ilfs_ospath_type_v parent_tree_path_type "${parent_root}${path}" || {
     # should not occur if ilfs_paths_do_create_mountpoint fails correctly
     ilfs_err "Missing mountpoint on '${parent_root}${path}'."
     return 1
@@ -305,7 +233,7 @@ ilfs_paths_create_mountpoint()
 
 ilfs_trees_add()
 {
-  local tree=$1 root=$2 opts=$3
+  local tree=$1 root=$2 opts=${3-}
 
   [[ -n "$tree" ]] || {
     ilfs_err "Invalid tree name '$tree'."
@@ -329,20 +257,6 @@ ilfs_trees_defined()
   [[ ${_ilfs_trees_root[$tree]+_} ]]
 }
 
-ilfs_trees_root()
-{
-  local tree=$1
-  local root=${_ilfs_trees_root[$tree]}
-  [[ -n "$root" ]] || ilfs_fatal "undefined tree '$tree'."
-  echo "$root"
-}
-
-ilfs_trees_opts()
-{
-  local tree=$1
-  echo "${_ilfs_trees_root[$tree]}"
-}
-
 ilfs_trees_load_config()
 {
   local tree root optstr
@@ -357,7 +271,7 @@ ilfs_trees_load_config()
       return 1
     fi
     if [[ "$optstr" == \#* ]]; then
-      optstr=
+      optstr=''
     fi
     ilfs_trees_add "$tree" "$root" "$optstr" || return 1
   done < <(ilfs_envsubst || echo _error_)
@@ -388,50 +302,39 @@ ilfs_paths_contains_glob()
 ilfs_paths_defined()
 {
   local path=$1
-  [ ${_paths_tree[$path]+_} ]
+  [ ${_ilfs_paths_tree[$path]+_} ]
 }
 
-ilfs_paths_tree()
+# ilfs_paths_comp_opt_v var [ -t TREE ] { PATH | ARRAY_REF } OPTION
+ilfs_paths_comp_opt_v()
 {
-  local path=$1
-  ilfs_paths_defined "$path" || {
-    ilfs_err "Invalid path '$path' encountered."
-    return 1
-  }
-  echo "${_paths_tree[$path]}"
+  local -n _ilfs_paths_comp_opt_var=$1; shift
+  local _ilfs_paths_comp_opt_out
+  _ilfs_paths_comp_opt_v "$@" || return $?
+  _ilfs_paths_comp_opt_var=$_ilfs_paths_comp_opt_out
 }
 
-ilfs_paths_initcmd()
+_ilfs_paths_comp_opt_v()
 {
-  local path=$1
-  ilfs_paths_defined "$path" || {
-    ilfs_err "Invalid path '$path' encountered."
-    return 1
-  }
-  echo "${_paths_initcmd[$path]}"
-}
-
-# ilfs_paths_comp_opt [ -t TREE ] { PATH | ARRAY_REF } OPTION
-ilfs_paths_comp_opt()
-{
-  local tree=; [[ "$1" = -t ]] && { tree=$2; shift 2; }
+  local tree=''; [[ "$1" = -t ]] && { tree=$2; shift 2; }
   local path_or_arrname=$1
   local opt=$2
   local -n __popts
+  local popt_prefix
 
   if [[ "$path_or_arrname" = /* ]]; then
     ilfs_paths_defined "$path_or_arrname" || {
       ilfs_err "Invalid path '$path_or_arrname'."
       return 1
     }
-    __popts=_paths_opts
-    popt_prefix=$path_or_arrname//
+    __popts=_ilfs_paths_opts
+    popt_prefix=${path_or_arrname}//
     if [[ -z "$tree" ]]; then
-      tree=$(ilfs_paths_tree "$path_or_arrname") || return 1
+      tree=${_ilfs_paths_tree[$path_or_arrname]}
     fi
   else
-    __popts=$path_or_arrname
-    popt_prefix=
+    __popts=${path_or_arrname}
+    popt_prefix=''
     [[ -n "$tree" ]] || {
       ilfs_err "Tree required."
       return 1
@@ -444,43 +347,44 @@ ilfs_paths_comp_opt()
 
   local overrides
   case "$opt" in
-    ro) overrides='_ILFS_OPTS_DEFAULTS __popts       _ilfs_trees_opts _ilfs_opts' ;;
+    ro) overrides='_ILFS_OPTS_DEFAULTS __popts     _ilfs_trees_opts _ilfs_opts' ;;
     *)  overrides='_ILFS_OPTS_DEFAULTS _ilfs_opts  _ilfs_trees_opts __popts' ;;
   esac
-  local arrname prefix= value=
+  local arrname prefix='' value=''
   for arrname in $overrides; do
     local -n __optarr=$arrname
     case "$arrname" in
       __popts) prefix=$popt_prefix ;;
       _ilfs_trees_opts) prefix=$tree// ;;
-      *) prefix= ;;
+      *) prefix='' ;;
     esac
     if [[ ${__optarr["$prefix$opt"]+_} ]]; then
       value=${__optarr["$prefix$opt"]}
     fi
   done
-  echo "$value"
+  _ilfs_paths_comp_opt_out=$value
 }
 
 ilfs_paths_has_subpaths()
 {
   local path=$1 p
   path=${path%/}
-  for p in "${_paths[@]}"; do
+  for p in "${_ilfs_paths[@]}"; do
     [[ ${p%/}/ == "$path"/* ]] && return 0
   done
   return 1
 }
 
-ilfs_paths_parent()
+ilfs_paths_parent_v()
 {
-  local path=$1
-  local parent=$(dirname "$path")
-  while [[ "$parent" != [/.] ]] && ! ilfs_paths_defined "$parent"; do
-    parent=$(dirname "$parent")
+  local -n _pp_var=$1
+  local _pp_path=$2 _pp_parent
+  dirname_v _pp_parent "$_pp_path"
+  while [[ "$_pp_parent" != [/.] ]] && ! ilfs_paths_defined "$_pp_parent"; do
+    dirname_v _pp_parent "$_pp_parent"
   done
-
-  ilfs_paths_defined "$parent" && echo "$parent"
+  _pp_var=''
+  ilfs_paths_defined "$_pp_parent" && _pp_var=$_pp_parent
 }
 
 # Load and parse config from stdin. Tree definitions are expected to be present.
@@ -495,11 +399,11 @@ ilfs_paths_load_config()
       return 1
     }
     if [[ "$optstr" == \#* ]]; then
-      optstr=
-      initcmd=
+      optstr=''
+      initcmd=''
     fi
     if [[ "$initcmd" == \#* ]]; then
-      initcmd=
+      initcmd=''
     fi
 
     ilfs_trees_defined "$tree" || {
@@ -510,9 +414,12 @@ ilfs_paths_load_config()
     # Process options
     local -A optarr=()
     ilfs_parse_opts "$optstr" optarr
+
+    local isglob=''
     # Explicit initializing not allowed for globs
     if ilfs_paths_contains_glob "$pathspec"; then
-      case "${optarr[init]}" in
+      isglob=1
+      case "${optarr[init]-}" in
         '')
           optarr[init]=skip
           ;;
@@ -525,27 +432,27 @@ ilfs_paths_load_config()
       esac
     fi
 
-    # Paths ending with slash must be directories and eventual direct path type setting must not contradict it
+    # Treat trailing slash as type=d and fail on conflicting path type setting
     if [[ "$pathspec" == */ ]]; then
-      [[ "${optarr[type]-e}" = [ed] ]] || {
+      [[ "${optarr[type]-e}" == [ed] ]] || {
         ilfs_err "Path '$path' ends with slash, but type='${optarr[type]}' is required in config line '$line'."
         return 1
       }
-      [[ "$pathspec" == / ]] || pathspec=${pathspec%/}
+      [[ "$pathspec" == '/' ]] || pathspec=${pathspec%/}
       optarr[type]=d
     fi
-    # Normalize path spec. Should validate like a normal path.
-    [[ "$pathspec" == / ]] || pathspec="/${pathspec#/}"
+    # Normalize path spec. Globs should validate like a normal path.
+    [[ "$pathspec" == '/' ]] || pathspec="/${pathspec#/}"
     ilfs_paths_validate "$pathspec" || {
       ilfs_err "Invalid path spec '$pathspec' in config line '$line'."
       return 1
     }
 
-    # Perform glob-expansion
-    local tree_root=$(ilfs_trees_root "$tree")
+    # Perform glob-expansion if needed
+    local tree_root=${_ilfs_trees_root[$tree]}
     local -a paths=()
-    if [ "$pathspec" = / ]; then
-      paths=( / )
+    if [[ -z "$isglob" ]]; then
+      paths=( "$pathspec" )
     else
       local matching
       if matching=$(cd "$tree_root" && shopt -s dotglob && compgen -G "${pathspec#/}"); then
@@ -553,7 +460,7 @@ ilfs_paths_load_config()
         paths=( "${paths[@]/#//}" )
       else
         local init
-        init=$(ilfs_paths_comp_opt -t "$tree" optarr init) || return 1
+        ilfs_paths_comp_opt_v init -t "$tree" optarr init || return 1
         case "$init" in
           missing|always)
             paths[0]="/${pathspec#/}"
@@ -571,7 +478,8 @@ ilfs_paths_load_config()
     # Final path config processing
     local path type
     for path in "${paths[@]}"; do
-      ilfs_paths_validate "$path" || {
+      # Revalidate after glob expansion
+      [[ "$path" == '/' || "$path" != */ ]] && ilfs_paths_validate "$path" || {
         ilfs_err "Invalid path '$path' in config line '$line'."
         return 1
       }
@@ -581,18 +489,18 @@ ilfs_paths_load_config()
         return 1
       }
       # Existing paths must match the required type
-      type=$(ilfs_paths_comp_opt -t "$tree" optarr type) || return 1
+      ilfs_paths_comp_opt_v type -t "$tree" optarr type || return 1
       if [[ -e "${tree_root}${path}" ]] && ! [ -"$type" "${tree_root}${path}" ]; then
         ilfs_err "Path '$path' does not match its required type '$type' in config line '$line'."
         return 1
       fi
       # Finally, push the processed path
-      _paths+=("$path")
-      _paths_tree+=([$path]=$tree)
-      _paths_initcmd+=([$path]=$initcmd)
+      _ilfs_paths+=("$path")
+      _ilfs_paths_tree+=([$path]=$tree)
+      _ilfs_paths_initcmd+=([$path]=$initcmd)
       local o
       for o in "${!optarr[@]}"; do
-        _paths_opts+=(["$path//$o"]=${optarr[$o]})
+        _ilfs_paths_opts+=(["$path//$o"]=${optarr[$o]})
       done
     done
   done
@@ -605,8 +513,8 @@ ilfs_paths_test()
   local test=$1
   local path=$2
   local tree rootdir
-  tree=$(ilfs_paths_tree "$path") || ilfs_fatal
-  rootdir=$(ilfs_trees_root "$tree")
+  tree=${_ilfs_paths_tree[$path]}
+  rootdir=${_ilfs_trees_root[$tree]}
   # double bracket alternative won't work this way
   [ "$test" "${rootdir}${path}" ]
 }
@@ -614,7 +522,7 @@ ilfs_paths_test()
 ilfs_paths_init()
 {
   local path
-  for path in "${_paths[@]}"; do
+  for path in "${_ilfs_paths[@]}"; do
     ilfs_paths_init_path "$path" || {
       ilfs_err "Failed to initialize path '$path'. Aborting."
       return 1
@@ -627,18 +535,18 @@ ilfs_paths_init_path()
   local path=$1
   local init type
 
-  init=$(ilfs_paths_comp_opt "$path" init) || return 1
+  ilfs_paths_comp_opt_v init "$path" init || return 1
   if [[ "$init" = always ]] || ! ilfs_paths_test -e "$path"; then
     case "$init" in
       never|skip)
-        # Currently already handled in ilfs_paths_load_config, but the behavior
-        # might change with introducing explicit initializing options.
+        # Handled in ilfs_paths_load_config, but the behavior might change
+        # with introducing explicit initializing options => (re)validate here.
         ilfs_err "Path '$path' is expected to exist (init=$init)."
         return 1
         ;;
     esac
     ilfs_paths_do_path_init "$path" || return 1
-    type=$(ilfs_paths_comp_opt "$path" type) || return 1
+    ilfs_paths_comp_opt_v type "$path" type || return 1
     if ! ilfs_paths_test -"$type" "$path"; then
       ilfs_err "Initializing path '$path' has not resulted in a valid path of type '$type'."
       return 1
@@ -647,30 +555,41 @@ ilfs_paths_init_path()
   return 0
 }
 
-# API:
-# CWD in tree root
-# relative path as $1
-# ILFS_PATH - canonic
-# ILFS_OP=init|mount
-# ILFS_TREE
-# ILFS_TREE_ROOT
-# ILFS_EXISTING_RELPATH
-# ILFS_INIT_SUBPATH
-# ILFS_PATH_OPTS_RO
-# ILFS_PATH_OPTS_INIT
-# ILFS_PATH_OPTS_TYPE=d/f/e
-#
-# ILFS_INIT_ERR_SKIP=??
-# ILFS_INIT_ERR_FAIL=1
-# ILFS_INIT_ERR_FAIL=1
+# ilfs_paths_do_path_init path
+# Initialize path by calling configured initcmd.
+# Interpreting initcmd:
+# - initcmd is evaluated using bash -c
+# - it can call external program(s) or use pure bash
+# - user can refer to their pre-defined functions in environment (export -f)
+# - interlayfs itself provides some utility functions, see `Exported functions` below
+# - interlayfs provides predefined initialization functions, see `Exported functions` below
+# Invocation of initcmd
+# - initcmd is started as a script with $1 set to relative path (i.e. without leading '/')
+# - CWD is set to the root of the tree where the path is going to be initialized
+# - Provided environment variables:
+#    - ILFS_OP: init|mount
+#    - ILFS_TREE: tree name
+#    - ILFS_TREE_ROOT: root directory of the tree, same as initial CWD
+#    - ILFS_PATH: canonic path (i.e. with leading '/')
+#    - ILFS_PATH_OPTS_RO: path-level option 'ro'
+#    - ILFS_PATH_OPTS_TYPE: path-level option 'type'
+#    - ILFS_PATH_OPTS_INIT: path-level option 'init'
+#    - ILFS_RELPATH: relative path to the initialized path, same as $1
+#    - ILFS_EXISTING_RELPATH: leading portion of ILFS_RELPATH that exists and is not necessarily subject to initialization
+#    - ILFS_INIT_SUBPATH: trailing portion of ILFS_RELPATH that does not exist or is subject to initialization
+# Interpreting initcmd result:
+# - Exit code currently distinguishes only success (zero) and failure (non-zero) codes.
+# - Special codes might be introduced if there is a use case for them, e.g. ILFS_INIT_ERR_SKIP might be treated as an instruction to programatically skip the path.
+# - Subsequent validation checks if the initialized path exists and matches respective type restriction.
 ilfs_paths_do_path_init()
 {
   local path=$1
   local initcmd
-  initcmd=$(ilfs_paths_initcmd "$path") || return 1
+  initcmd=${_ilfs_paths_initcmd[$path]}
   [[ "$initcmd" =~ [^[:space:]] ]] || {
     # Blank initcmd is treated as a special condition just to be user-friendly.
-    # It still can do just nothing even if non-blank.
+    # Even non-blank initcmd can do just nothing, which is actually a correct
+    # behavior for init=always.
     ilfs_err "Path '$path' should be initialized with blank initcmd."
     return 1
   }
@@ -679,24 +598,26 @@ ilfs_paths_do_path_init()
 
   # tree-related variables
   local ILFS_TREE ILFS_TREE_ROOT
-  ILFS_TREE=$(ilfs_paths_tree "$path") || return 1
-  ILFS_TREE_ROOT=$(ilfs_trees_root "$ILFS_TREE") || return 1
+  ILFS_TREE=${_ilfs_paths_tree[$path]}
+  ILFS_TREE_ROOT=${_ilfs_trees_root[$ILFS_TREE]}
 
   # absolute/canonic paths
   local ILFS_PATH=$path
-  local ILFS_PATH_OPTS_RO=${_paths_opts[$path//ro]-}
-  local ILFS_PATH_OPTS_INIT=${_paths_opts[$path//init]-}
-  local ILFS_PATH_OPTS_TYPE=${_paths_opts[$path//type]-e}
+  local ILFS_PATH_OPTS_RO=${_ilfs_paths_opts[$path//ro]-}
+  local ILFS_PATH_OPTS_INIT=${_ilfs_paths_opts[$path//init]-}
+  local ILFS_PATH_OPTS_TYPE=${_ilfs_paths_opts[$path//type]-e}
 
   # relative paths
   local ILFS_RELPATH ILFS_EXISTING_RELPATH ILFS_INIT_SUBPATH
   ILFS_RELPATH=${path#/}
   if [[ -n "$ILFS_RELPATH" ]]; then
-    ILFS_EXISTING_RELPATH=$(dirname "$ILFS_RELPATH")
-    ILFS_INIT_SUBPATH=$(basename "$ILFS_RELPATH")
+    dirname_v ILFS_EXISTING_RELPATH "$ILFS_RELPATH"
+    basename_v ILFS_INIT_SUBPATH "$ILFS_RELPATH"
+    local basename
     while [[ "$ILFS_EXISTING_RELPATH" != . && ! -d "$ILFS_TREE_ROOT/$ILFS_EXISTING_RELPATH" ]]; do
-      ILFS_INIT_SUBPATH="$(basename "$ILFS_EXISTING_RELPATH")/$ILFS_INIT_SUBPATH"
-      ILFS_EXISTING_RELPATH=$(dirname "$ILFS_EXISTING_RELPATH")
+      basename_v basename "$ILFS_EXISTING_RELPATH"
+      ILFS_INIT_SUBPATH="$basename/$ILFS_INIT_SUBPATH"
+      dirname_v ILFS_EXISTING_RELPATH "$ILFS_EXISTING_RELPATH"
     done
   else
     # initializing root
@@ -715,13 +636,16 @@ ilfs_paths_do_path_init()
     export ILFS_PATH_OPTS_RO ILFS_PATH_OPTS_INIT ILFS_PATH_OPTS_TYPE
     export ILFS_RELPATH ILFS_EXISTING_RELPATH ILFS_INIT_SUBPATH
 
+    # Exported functions
+    export -f dirname_v
+    export -f basename_v
+    export -f ilfs_envsubst
+    export -f ilfs_err # TODO: Revisit error handling in initcmd
     export -f il_mkdir
     export -f il_template_envsubst
-    export -f ilfs_envsubst
     export -f il_copy
     export -f il_ownership
     export -f il_apply_to_subpaths
-    export -f ilfs_err # TODO
 
     echo "Initializing '$path' using '$initcmd'." >&2
     exec bash -e -c "$initcmd" init "$ILFS_RELPATH"
@@ -741,7 +665,7 @@ il_template_envsubst()
   local content parentdir
   cd "$ILFS_EXISTING_RELPATH"
   content=$(ilfs_envsubst < "$1") || return 1
-  parentdir=$(dirname "$ILFS_INIT_SUBPATH")
+  dirname_v parentdir "$ILFS_INIT_SUBPATH"
   [[ "$parentdir" == . ]] || mkdir -p "$parentdir"
   touch "$ILFS_INIT_SUBPATH" # fail early
   printf '%s\n' "$content" > "$ILFS_INIT_SUBPATH"
@@ -763,7 +687,8 @@ il_copy()
   (
     set -e
     cd "$ILFS_EXISTING_RELPATH"
-    local parentdir=$(dirname "$ILFS_INIT_SUBPATH")
+    local parentdir
+    dirname_v parentdir "$ILFS_INIT_SUBPATH"
     [[ "$parentdir" == . ]] || mkdir -p "$parentdir"
     il_ownership "$parentdir"
   )
@@ -792,10 +717,10 @@ il_apply_to_subpaths()
   local path=$1; shift
   [[ "$path" != /* ]] || { echo "Refusing to work on absolute path '$p'."; return 1; }
   local -a subpaths=("$path")
-  path=$(dirname "$path")
+  dirname_v path "$path"
   while [[ "$path" != . ]]; do
     subpaths=("$path" "${subpaths[@]}")
-    path=$(dirname "$path")
+    dirname_v path "$path"
   done
   "$@" "${subpaths[@]}"
 }
