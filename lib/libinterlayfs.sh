@@ -448,26 +448,22 @@ ilfs_paths_load_config()
       return 1
     }
 
-    # Perform glob-expansion if needed
+    # Evaluate matching paths and validate initialization
     local tree_root=${_ilfs_trees_root[$tree]}
     local -a paths=()
-    if [[ -z "$isglob" ]]; then
-      paths=( "$pathspec" )
+    if [[ -n "$isglob" ]]; then
+      ilfs_globexpand_v paths "$tree_root" "${pathspec#/}"
+      # TODO: filter matched paths by required type
+      paths=("${paths[@]/#//}")
     else
-      local matching
-      if matching=$(cd "$tree_root" && shopt -s dotglob && compgen -G "${pathspec#/}"); then
-        readarray -t paths <<< "$matching"
-        paths=( "${paths[@]/#//}" )
-      else
+      paths=("$pathspec")
+      if ! [[ -e "${tree_root}${pathspec}" ]]; then
         local init
         ilfs_paths_comp_opt_v init -t "$tree" optarr init || return 1
         case "$init" in
-          missing|always)
-            paths[0]="/${pathspec#/}"
+          missing|always|skip)
             ;;
-          skip)
-            ;;
-          never|*)
+          *)
             ilfs_err "Path spec '$pathspec' did not match anything in config line '$line' and is not about to be initialized."
             return 1
             ;;

@@ -147,4 +147,28 @@ testPathsContainsGlob()
   done
 }
 
+testGlobexpand()
+{
+  mkdir -p "$SHUNIT_TMPDIR"/dir/{dir,.dotdir}
+  touch "$SHUNIT_TMPDIR"/dir/{file,.dotfile,'ug ly)','*','quot:"'}
+  mkdir "$SHUNIT_TMPDIR"/emptydir
+
+  local pwd0=$PWD shopt0=$(shopt) ifs0=$IFS
+  local -a matches
+
+  ilfs_globexpand_v matches "$SHUNIT_TMPDIR"/dir '*'
+  assertEquals "CWD affected" "$pwd0" "$PWD"
+  assertEquals "shopt affected" "$shopt0" "$(shopt)"
+  assertEquals "IFS affected" "$ifs0" "$IFS"
+  assertEquals "dir+file glob expansion with dotnames" '* dir .dotdir .dotfile file quot:" ug ly)' "${matches[*]}"
+  assertEquals "dir+file glob expansion with dotnames" 7 ${#matches[@]}
+
+  ilfs_globexpand_v matches "$SHUNIT_TMPDIR"/dir '*/'
+  assertEquals "dir glob expansion with dotnames" 'dir/ .dotdir/' "${matches[*]}"
+  assertEquals "dir glob expansion with dotnames" 2 ${#matches[@]}
+
+  ilfs_globexpand_v matches "$SHUNIT_TMPDIR"/emptydir '*/'
+  assertEquals "glob expansion with no matches" 0 ${#matches[@]}
+}
+
 . shunit2

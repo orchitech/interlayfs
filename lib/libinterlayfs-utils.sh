@@ -142,3 +142,24 @@ ilfs_ospath_type_v()
   ilfs_err "Encountered OS path '$ospath': file not found."
   return 1
 }
+
+ilfs_globexpand_v()
+{
+  local -n __v=$1
+  local __cwd=$2 __pattern=$3
+  local __shopts_set='' __shopts_unset=''
+  local IFS=' '
+
+  cd "$__cwd" || return $?
+  shopt -q dotglob || __shopts_set+=' dotglob'
+  shopt -q nullglob || __shopts_set+=' nullglob'
+  shopt -q extglob && __shopts_unset+=' extglob' || :
+  [[ -z "$__shopts_set" ]] || shopt -s $__shopts_set
+  [[ -z "$__shopts_unset" ]] || shopt -u $__shopts_unset
+  IFS=''
+  __v=($__pattern)
+  IFS=' '
+  [[ -z "$__shopts_set" ]] || shopt -u $__shopts_set
+  [[ -z "$__shopts_unset" ]] || shopt -u $__shopts_unset
+  cd "$OLDPWD"
+}
